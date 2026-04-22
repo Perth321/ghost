@@ -1,0 +1,5 @@
+node_modules
+dist
+assets/scary.mp3
+.env
+*.log
