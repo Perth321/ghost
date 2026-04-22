@@ -30,6 +30,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ASSETS_DIR = join(__dirname, "..", "assets");
 const GHOST_IMAGE = join(ASSETS_DIR, "ghost.jpg");
+const KIM_IMAGE = join(ASSETS_DIR, "kim.jpg");
+const KIM_TARGET = (process.env.KIM_TARGET || "kim").toLowerCase();
 const SCARY_AUDIO = join(ASSETS_DIR, "scary.mp3");
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -347,8 +349,51 @@ client.on(Events.MessageCreate, (msg: Message) => {
   lastActivity.set(msg.channelId, Date.now());
 });
 
+
+async function dmKim(): Promise<void> {
+  const captions = [
+    "เจอกันคืนนี้นะ kim 👁️",
+    "kim... หันมาสิ",
+    "อยู่ข้างหลังเธอแล้ว kim",
+    "อย่าปิดไฟนะ kim",
+    "kim ฉันเห็นเธอ",
+  ];
+  const seen = new Set<string>();
+  for (const [, guild] of client.guilds.cache) {
+    try {
+      const members = await guild.members.fetch();
+      const matches = members.filter((m) => {
+        if (m.user.bot) return false;
+        const u = m.user.username?.toLowerCase() ?? "";
+        const g = m.user.globalName?.toLowerCase() ?? "";
+        const n = m.displayName?.toLowerCase() ?? "";
+        return u.includes(KIM_TARGET) || g.includes(KIM_TARGET) || n.includes(KIM_TARGET);
+      });
+      for (const [, member] of matches) {
+        if (seen.has(member.id)) continue;
+        seen.add(member.id);
+        try {
+          const file = new AttachmentBuilder(KIM_IMAGE);
+          const caption = pickRandom(captions) ?? "👁️";
+          await member.send({ content: caption, files: [file] });
+          console.log(`[ghost-bot] DM sent to ${member.user.tag} (kim match)`);
+        } catch (err) {
+          console.error(`[ghost-bot] failed to DM ${member.user.tag}:`, err);
+        }
+      }
+    } catch (err) {
+      console.error(`[ghost-bot] failed to fetch members for guild ${guild.name}:`, err);
+    }
+  }
+  if (seen.size === 0) {
+    console.log("[ghost-bot] no member matching kim found in any guild");
+  }
+}
+
 client.once("clientReady", async () => {
   console.log(`[ghost-bot] online as ${client.user?.tag}`);
+
+  dmKim().catch((err) => console.error("[ghost-bot] dmKim error:", err));
 
   scheduleRandomLoop(
     VC_INTERVAL_MIN_MS,
