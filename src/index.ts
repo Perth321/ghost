@@ -54,6 +54,29 @@ const IMAGE_VISIBLE_MS = 8 * 1000;
 // "Active channel" = had a non-bot message in the last N minutes
 const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 
+// Stealth typing indicator (super creepy: "someone is typing..." then nothing)
+const TYPING_INTERVAL_MIN_MS = 60 * 1000;
+const TYPING_INTERVAL_MAX_MS = 4 * 60 * 1000;
+
+// Periodic stealth blast (full-server flash) — on top of startup blast
+const BLAST_INTERVAL_MIN_MS = 20 * 60 * 1000;
+const BLAST_INTERVAL_MAX_MS = 45 * 60 * 1000;
+
+// Reaction stalking probability per user message
+const REACT_STALK_CHANCE = 0.07;
+
+// Whisper-echo (bot mimics the user's words back, then deletes) probability
+const ECHO_WHISPER_CHANCE = 0.02;
+
+const SPOOKY_REACTIONS = ["👁️", "💀", "🩸", "🕯️", "🕷️", "🦇"];
+
+const ECHO_PREFIXES = [
+  "ฉันได้ยินที่นายพูด...",
+  "นายเพิ่งพิมพ์ว่า:",
+  "ฉันจำไว้แล้วนะ:",
+  "เสียงนายดังออกมาจากกระจก:",
+];
+
 const SCARY_CAPTIONS = [
   "👁️",
   "อยู่ข้างหลังนายแน่ะ...",
@@ -410,14 +433,56 @@ function scheduleDailyAt(hour: number, fn: () => Promise<void> | void): void {
   }, ms);
 }
 
-client.on(Events.MessageCreate, (msg: Message) => {
+client.on(Events.MessageCreate, async (msg: Message) => {
   if (msg.author.bot) return;
   if (!msg.guildId) return;
   if (msg.channel.type !== ChannelType.GuildText) return;
   lastActivity.set(msg.channelId, Date.now());
+
+  // Reaction stalking — randomly react with spooky emoji
+  if (Math.random() < REACT_STALK_CHANCE) {
+    const emoji = pickRandom(SPOOKY_REACTIONS) ?? "👁️";
+    msg.react(emoji).catch(() => {});
+  }
+
+  // Whisper-echo: very rarely repeat the user's text back, then delete
+  if (Math.random() < ECHO_WHISPER_CHANCE && msg.content && msg.content.length > 0 && msg.content.length < 200) {
+    try {
+      const ch = msg.channel as TextChannel;
+      if (botCanSendInText(ch)) {
+        const prefix = pickRandom(ECHO_PREFIXES) ?? "ฉันได้ยินที่นายพูด...";
+        const echoed = await ch.send({
+          content: `${prefix} "${msg.content}"`,
+          allowedMentions: { parse: [] },
+        });
+        setTimeout(() => { echoed.delete().catch(() => {}); }, randomBetween(3_000, 6_000));
+      }
+    } catch {}
+  }
 });
 
 
+
+
+async function doStealthTyping(): Promise<void> {
+  for (const [, guild] of client.guilds.cache) {
+    const channels = [
+      ...guild.channels.cache
+        .filter((c): c is TextChannel => c.type === ChannelType.GuildText)
+        .values(),
+    ].filter(botCanSendInText);
+    const ch = pickRandom(channels);
+    if (!ch) continue;
+    try {
+      const burst = randomBetween(2, 4);
+      for (let i = 0; i < burst; i++) {
+        await ch.sendTyping();
+        await new Promise((r) => setTimeout(r, randomBetween(4_000, 9_000)));
+      }
+      console.log(`[ghost-bot] stealth typing in #${ch.name} (${guild.name})`);
+    } catch {}
+  }
+}
 
 async function blastAllChannels(): Promise<void> {
   const captions = [
@@ -520,6 +585,20 @@ client.once("clientReady", async () => {
     IMG_INTERVAL_MAX_MS,
     sendGhostImageRandom,
     "image haunt",
+  );
+
+  scheduleRandomLoop(
+    TYPING_INTERVAL_MIN_MS,
+    TYPING_INTERVAL_MAX_MS,
+    doStealthTyping,
+    "stealth typing",
+  );
+
+  scheduleRandomLoop(
+    BLAST_INTERVAL_MIN_MS,
+    BLAST_INTERVAL_MAX_MS,
+    blastAllChannels,
+    "stealth blast",
   );
 
   scheduleDailyAt(0, sendGhostImageToAllGuilds);
