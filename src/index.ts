@@ -4,9 +4,11 @@ import {
   Partials,
   AttachmentBuilder,
   ChannelType,
+  Events,
   type Guild,
   type VoiceChannel,
   type TextChannel,
+  type Message,
 } from "discord.js";
 import {
   joinVoiceChannel,
@@ -36,9 +38,38 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-const VC_INTERVAL_MS = 20 * 60 * 1000;
-const VC_STAY_MS = 25 * 1000;
+// Voice haunt: random interval 10–20 minutes
+const VC_INTERVAL_MIN_MS = 10 * 60 * 1000;
+const VC_INTERVAL_MAX_MS = 20 * 60 * 1000;
+const VC_FULL_STAY_MS = 25 * 1000; // when channel has people
+const VC_PEEK_STAY_MS = 4 * 1000;  // empty channel — quick pop in & leave
+
+// Random text image haunt: every 15–45 minutes pick an active text channel
+const IMG_INTERVAL_MIN_MS = 15 * 60 * 1000;
+const IMG_INTERVAL_MAX_MS = 45 * 60 * 1000;
 const IMAGE_VISIBLE_MS = 30 * 1000;
+
+// "Active channel" = had a non-bot message in the last N minutes
+const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
+
+const SCARY_CAPTIONS = [
+  "👁️",
+  "อยู่ข้างหลังนายแน่ะ...",
+  "หันมาสิ",
+  "...",
+  "ฉันเห็นนายนะ",
+  "อย่าปิดไฟ",
+  "เธอได้ยินมั้ย",
+];
+
+function randomBetween(min: number, max: number): number {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function pickRandom<T>(arr: T[]): T | null {
+  if (arr.length === 0) return null;
+  return arr[Math.floor(Math.random() * arr.length)] ?? null;
+}
 
 function ensureScaryAudio(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -47,20 +78,13 @@ function ensureScaryAudio(): Promise<void> {
 
     const args = [
       "-y",
-      "-f",
-      "lavfi",
-      "-i",
-      "anoisesrc=color=brown:amplitude=0.4:duration=25",
-      "-af",
-      "highpass=f=40,lowpass=f=550,tremolo=f=0.35:d=0.8,aecho=0.85:0.75:1100|1700:0.4|0.25,volume=1.6",
-      "-ac",
-      "2",
-      "-ar",
-      "48000",
-      "-c:a",
-      "libmp3lame",
-      "-b:a",
-      "128k",
+      "-f", "lavfi",
+      "-i", "anoisesrc=color=brown:amplitude=0.4:duration=25",
+      "-af", "highpass=f=40,lowpass=f=550,tremolo=f=0.35:d=0.8,aecho=0.85:0.75:1100|1700:0.4|0.25,volume=1.6",
+      "-ac", "2",
+      "-ar", "48000",
+      "-c:a", "libmp3lame",
+      "-b:a", "128k",
       SCARY_AUDIO,
     ];
 
@@ -77,50 +101,90 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
   ],
   partials: [Partials.Channel],
 });
 
-function pickPopulatedVoiceChannel(guild: Guild): VoiceChannel | null {
-  const candidates = guild.channels.cache
-    .filter(
-      (c): c is VoiceChannel =>
-        c.type === ChannelType.GuildVoice &&
-        c.members.filter((m) => !m.user.bot).size > 0,
-    )
-    .map((c) => c)
-    .sort(
-      (a, b) =>
-        b.members.filter((m) => !m.user.bot).size -
-        a.members.filter((m) => !m.user.bot).size,
-    );
-  return candidates[0] ?? null;
+// Tracks last activity timestamp per text channel id
+const lastActivity = new Map<string, number>();
+
+function botCanUseVoice(channel: VoiceChannel): boolean {
+  const me = channel.guild.members.me;
+  if (!me) return false;
+  const perms = channel.permissionsFor(me);
+  return perms?.has(["ViewChannel", "Connect", "Speak"]) === true;
 }
 
-function pickSendableTextChannel(guild: Guild): TextChannel | null {
-  const me = guild.members.me;
-  if (!me) return null;
-  const preferredNames = ["general", "ทั่วไป", "chat", "พูดคุย"];
-  const all = guild.channels.cache.filter(
-    (c): c is TextChannel =>
-      c.type === ChannelType.GuildText &&
-      c.permissionsFor(me)?.has(["SendMessages", "ViewChannel", "AttachFiles"]) === true,
+function listAccessibleVoiceChannels(guild: Guild): VoiceChannel[] {
+  return [
+    ...guild.channels.cache
+      .filter((c): c is VoiceChannel => c.type === ChannelType.GuildVoice)
+      .values(),
+  ].filter(botCanUseVoice);
+}
+
+function pickRandomVoiceChannel(
+  guild: Guild,
+): { channel: VoiceChannel; populated: boolean } | null {
+  const all = listAccessibleVoiceChannels(guild);
+  if (all.length === 0) return null;
+  const populated = all.filter(
+    (c) => c.members.filter((m) => !m.user.bot).size > 0,
   );
-  for (const name of preferredNames) {
-    const found = all.find((c) => c.name.toLowerCase().includes(name));
-    if (found) return found;
+
+  // 70% chance to pick populated room when possible, otherwise any
+  if (populated.length > 0 && Math.random() < 0.7) {
+    const ch = pickRandom(populated);
+    return ch ? { channel: ch, populated: true } : null;
   }
-  if (guild.systemChannel && all.has(guild.systemChannel.id)) {
-    return guild.systemChannel as TextChannel;
-  }
-  return all.first() ?? null;
+  const ch = pickRandom(all);
+  if (!ch) return null;
+  return {
+    channel: ch,
+    populated: ch.members.filter((m) => !m.user.bot).size > 0,
+  };
 }
 
-async function hauntVoiceChannel(channel: VoiceChannel): Promise<void> {
+function botCanSendInText(ch: TextChannel): boolean {
+  const me = ch.guild.members.me;
+  if (!me) return false;
+  return (
+    ch.permissionsFor(me)?.has([
+      "ViewChannel",
+      "SendMessages",
+      "AttachFiles",
+    ]) === true
+  );
+}
+
+function pickActiveTextChannel(guild: Guild): TextChannel | null {
+  const now = Date.now();
+  const all = [
+    ...guild.channels.cache
+      .filter((c): c is TextChannel => c.type === ChannelType.GuildText)
+      .values(),
+  ].filter(botCanSendInText);
+
+  const active = all.filter((c) => {
+    const t = lastActivity.get(c.id);
+    return t !== undefined && now - t <= ACTIVE_WINDOW_MS;
+  });
+
+  if (active.length > 0) return pickRandom(active);
+  // fallback to any sendable channel
+  return pickRandom(all);
+}
+
+async function hauntVoiceChannel(
+  channel: VoiceChannel,
+  populated: boolean,
+): Promise<void> {
+  const stay = populated ? VC_FULL_STAY_MS : VC_PEEK_STAY_MS;
   console.log(
-    `[ghost-bot] haunting voice channel "${channel.name}" in "${channel.guild.name}"`,
+    `[ghost-bot] ${populated ? "haunting" : "peeking"} "${channel.name}" in "${channel.guild.name}" for ${stay / 1000}s`,
   );
 
   const connection = joinVoiceChannel({
@@ -128,53 +192,81 @@ async function hauntVoiceChannel(channel: VoiceChannel): Promise<void> {
     guildId: channel.guild.id,
     adapterCreator: channel.guild.voiceAdapterCreator,
     selfDeaf: false,
-    selfMute: false,
+    selfMute: !populated, // muted on peek visits — no point playing to empty room
   });
 
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
   } catch (err) {
-    console.error("[ghost-bot] failed to connect to voice:", err);
+    console.error("[ghost-bot] voice connect failed:", err);
     connection.destroy();
     return;
   }
 
-  const player = createAudioPlayer();
-  const resource = createAudioResource(SCARY_AUDIO, {
-    inputType: StreamType.Arbitrary,
-  });
-  connection.subscribe(player);
-  player.play(resource);
+  let player: ReturnType<typeof createAudioPlayer> | null = null;
+  if (populated) {
+    player = createAudioPlayer();
+    const resource = createAudioResource(SCARY_AUDIO, {
+      inputType: StreamType.Arbitrary,
+    });
+    connection.subscribe(player);
+    player.play(resource);
+  }
 
   await new Promise<void>((resolve) => {
-    const timeout = setTimeout(resolve, VC_STAY_MS);
-    player.once(AudioPlayerStatus.Idle, () => {
-      clearTimeout(timeout);
-      resolve();
-    });
+    const timeout = setTimeout(resolve, stay);
+    if (player) {
+      player.once(AudioPlayerStatus.Idle, () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    }
   });
 
-  player.stop(true);
+  if (player) player.stop(true);
   connection.destroy();
-  console.log(`[ghost-bot] left voice channel "${channel.name}"`);
+  console.log(`[ghost-bot] left "${channel.name}"`);
 }
 
-async function runVoiceHaunt(): Promise<void> {
+async function runVoiceHauntOnce(): Promise<void> {
   for (const guild of client.guilds.cache.values()) {
     try {
-      const vc = pickPopulatedVoiceChannel(guild);
-      if (!vc) continue;
-      await hauntVoiceChannel(vc);
+      const pick = pickRandomVoiceChannel(guild);
+      if (!pick) continue;
+      await hauntVoiceChannel(pick.channel, pick.populated);
     } catch (err) {
       console.error(`[ghost-bot] voice haunt error in ${guild.name}:`, err);
     }
   }
 }
 
-async function sendGhostImageToAllGuilds(): Promise<void> {
+async function sendGhostImageRandom(): Promise<void> {
   for (const guild of client.guilds.cache.values()) {
     try {
-      const ch = pickSendableTextChannel(guild);
+      const ch = pickActiveTextChannel(guild);
+      if (!ch) continue;
+      const attachment = new AttachmentBuilder(GHOST_IMAGE, { name: "ghost.jpg" });
+      const caption = pickRandom(SCARY_CAPTIONS) ?? "👁️";
+      const msg = await ch.send({ content: caption, files: [attachment] });
+      console.log(
+        `[ghost-bot] sent ghost image in "${ch.name}" of "${guild.name}"`,
+      );
+      setTimeout(() => {
+        msg.delete().catch((err) =>
+          console.error("[ghost-bot] delete image error:", err),
+        );
+      }, IMAGE_VISIBLE_MS);
+    } catch (err) {
+      console.error(`[ghost-bot] image haunt error in ${guild.name}:`, err);
+    }
+  }
+}
+
+async function sendGhostImageToAllGuilds(): Promise<void> {
+  // Used for the scheduled midnight / 1 AM bombardment — picks any sendable channel
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      const ch = pickActiveTextChannel(guild);
       if (!ch) continue;
       const attachment = new AttachmentBuilder(GHOST_IMAGE, { name: "ghost.jpg" });
       const msg = await ch.send({
@@ -182,17 +274,40 @@ async function sendGhostImageToAllGuilds(): Promise<void> {
         files: [attachment],
       });
       console.log(
-        `[ghost-bot] sent ghost image in "${ch.name}" of "${guild.name}"`,
+        `[ghost-bot] [scheduled] sent ghost image in "${ch.name}" of "${guild.name}"`,
       );
       setTimeout(() => {
-        msg.delete().catch((err) => {
-          console.error("[ghost-bot] failed to delete ghost image:", err);
-        });
+        msg.delete().catch((err) =>
+          console.error("[ghost-bot] delete image error:", err),
+        );
       }, IMAGE_VISIBLE_MS);
     } catch (err) {
-      console.error(`[ghost-bot] image haunt error in ${guild.name}:`, err);
+      console.error(`[ghost-bot] scheduled image error in ${guild.name}:`, err);
     }
   }
+}
+
+function scheduleRandomLoop(
+  minMs: number,
+  maxMs: number,
+  fn: () => Promise<void>,
+  label: string,
+): void {
+  const tick = () => {
+    const delay = randomBetween(minMs, maxMs);
+    console.log(
+      `[ghost-bot] next ${label} in ${Math.round(delay / 1000 / 60)} min`,
+    );
+    setTimeout(async () => {
+      try {
+        await fn();
+      } catch (err) {
+        console.error(`[ghost-bot] ${label} task error:`, err);
+      }
+      tick();
+    }, delay);
+  };
+  tick();
 }
 
 function msUntilNext(hour: number, minute = 0): number {
@@ -225,14 +340,29 @@ function scheduleDailyAt(hour: number, fn: () => Promise<void> | void): void {
   }, ms);
 }
 
+client.on(Events.MessageCreate, (msg: Message) => {
+  if (msg.author.bot) return;
+  if (!msg.guildId) return;
+  if (msg.channel.type !== ChannelType.GuildText) return;
+  lastActivity.set(msg.channelId, Date.now());
+});
+
 client.once("clientReady", async () => {
   console.log(`[ghost-bot] online as ${client.user?.tag}`);
 
-  setInterval(() => {
-    runVoiceHaunt().catch((err) =>
-      console.error("[ghost-bot] runVoiceHaunt error:", err),
-    );
-  }, VC_INTERVAL_MS);
+  scheduleRandomLoop(
+    VC_INTERVAL_MIN_MS,
+    VC_INTERVAL_MAX_MS,
+    runVoiceHauntOnce,
+    "voice haunt",
+  );
+
+  scheduleRandomLoop(
+    IMG_INTERVAL_MIN_MS,
+    IMG_INTERVAL_MAX_MS,
+    sendGhostImageRandom,
+    "image haunt",
+  );
 
   scheduleDailyAt(0, sendGhostImageToAllGuilds);
   scheduleDailyAt(1, sendGhostImageToAllGuilds);
