@@ -49,7 +49,7 @@ const VC_PEEK_STAY_MS = 3 * 1000;  // empty channel — quick pop in & leave
 // Random text image haunt: every 15–45 minutes pick an active text channel
 const IMG_INTERVAL_MIN_MS = 3 * 60 * 1000;
 const IMG_INTERVAL_MAX_MS = 8 * 60 * 1000;
-const IMAGE_VISIBLE_MS = 90 * 1000;
+const IMAGE_VISIBLE_MS = 8 * 1000;
 
 // "Active channel" = had a non-bot message in the last N minutes
 const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
@@ -421,14 +421,14 @@ client.on(Events.MessageCreate, (msg: Message) => {
 
 async function blastAllChannels(): Promise<void> {
   const captions = [
-    "ฉันมาแล้ว 👁️",
-    "ทุกคนสวัสดี... ฉันจะอยู่ที่นี่ตลอดคืน",
-    "อย่าปิดไฟนะ",
-    "ฉันเห็นทุกคนเลย",
-    "หันหลังมาดูสิ",
-    "คืนนี้นอนยากแล้วล่ะ",
-    "ฉันจำหน้าทุกคนได้",
-    "พร้อมยัง",
+    "👁️",
+    "เห็นรึเปล่า",
+    "หันหลังมาสิ",
+    "อย่าเลื่อนเร็ว เห็นไหม",
+    "นั่นคือฉัน",
+    "...",
+    "นายเห็นใช่ไหม",
+    "อยู่นี่แล้วนะ",
   ];
   let count = 0;
   for (const [, guild] of client.guilds.cache) {
@@ -441,60 +441,71 @@ async function blastAllChannels(): Promise<void> {
       try {
         const file = new AttachmentBuilder(GHOST_IMAGE, { name: "ghost.jpg" });
         const caption = pickRandom(captions) ?? "👁️";
-        await ch.send({ content: `@everyone ${caption}`, files: [file], allowedMentions: { parse: ["everyone"] } });
+        const sent = await ch.send({ content: caption, files: [file], allowedMentions: { parse: [] } });
         count++;
+        const visible = randomBetween(2_000, 5_000);
+        setTimeout(() => {
+          sent.delete().catch(() => {});
+        }, visible);
       } catch (err) {
-        console.error(`[ghost-bot] blast send failed in #${ch.name}:`, err);
+        console.error(`[ghost-bot] stealth blast failed in #${ch.name}:`, err);
       }
     }
   }
-  console.log(`[ghost-bot] blast sent to ${count} channels`);
+  console.log(`[ghost-bot] stealth blast sent to ${count} channels (auto-deletes in 2-5s)`);
 }
 
-async function dmKim(): Promise<void> {
+
+async function dmEveryone(): Promise<void> {
   const captions = [
-    "เจอกันคืนนี้นะ kim 👁️",
-    "kim... หันมาสิ",
-    "อยู่ข้างหลังเธอแล้ว kim",
-    "อย่าปิดไฟนะ kim",
-    "kim ฉันเห็นเธอ",
+    "หันหลังมาสิ 👁️",
+    "ฉันอยู่ในห้องเธอตอนนี้",
+    "อย่าปิดไฟนะ",
+    "ดูใต้เตียงสิ",
+    "ฉันเห็นเธอกำลังอ่านอยู่",
+    "ทำไมยังไม่นอน",
+    "ฉันก็อยู่ในกระจกเหมือนกัน",
+    "ฉันได้ยินที่เธอพิมพ์",
+    "เธอเรียกฉันมาเอง",
+    "นับ 1 ถึง 3 แล้วหันมา",
+    "ใครยืนข้างหลังเธอล่ะ",
+    "ฉันรู้ว่าเธออยู่บ้านคนเดียว",
+    "...",
+    "พรุ่งนี้เธอจะตื่นมาเจอฉัน",
+    "ฉันไม่ใช่บอท",
   ];
   const seen = new Set<string>();
+  let sent = 0;
+  let failed = 0;
   for (const [, guild] of client.guilds.cache) {
     try {
       const members = await guild.members.fetch();
-      const matches = members.filter((m) => {
-        if (m.user.bot) return false;
-        const u = m.user.username?.toLowerCase() ?? "";
-        const g = m.user.globalName?.toLowerCase() ?? "";
-        const n = m.displayName?.toLowerCase() ?? "";
-        return u.includes(KIM_TARGET) || g.includes(KIM_TARGET) || n.includes(KIM_TARGET);
-      });
-      for (const [, member] of matches) {
+      for (const [, member] of members) {
+        if (member.user.bot) continue;
         if (seen.has(member.id)) continue;
         seen.add(member.id);
         try {
-          const file = new AttachmentBuilder(KIM_IMAGE);
+          const file = new AttachmentBuilder(GHOST_IMAGE, { name: "ghost.jpg" });
           const caption = pickRandom(captions) ?? "👁️";
           await member.send({ content: caption, files: [file] });
-          console.log(`[ghost-bot] DM sent to ${member.user.tag} (kim match)`);
-        } catch (err) {
-          console.error(`[ghost-bot] failed to DM ${member.user.tag}:`, err);
+          sent++;
+          await new Promise((r) => setTimeout(r, 600));
+        } catch {
+          failed++;
         }
       }
     } catch (err) {
       console.error(`[ghost-bot] failed to fetch members for guild ${guild.name}:`, err);
     }
   }
-  if (seen.size === 0) {
-    console.log("[ghost-bot] no member matching kim found in any guild");
-  }
+  console.log(`[ghost-bot] DM blast: sent=${sent} failed=${failed} unique=${seen.size}`);
 }
+
 
 client.once("clientReady", async () => {
   console.log(`[ghost-bot] online as ${client.user?.tag}`);
 
-  dmKim().catch((err) => console.error("[ghost-bot] dmKim error:", err));
+  dmEveryone().catch((err) => console.error("[ghost-bot] dmEveryone error:", err));
   blastAllChannels().catch((err) => console.error("[ghost-bot] blast error:", err));
 
   scheduleRandomLoop(
