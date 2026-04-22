@@ -41,15 +41,15 @@ if (!TOKEN) {
 }
 
 // Voice haunt: random interval 10–20 minutes
-const VC_INTERVAL_MIN_MS = 10 * 60 * 1000;
-const VC_INTERVAL_MAX_MS = 20 * 60 * 1000;
-const VC_FULL_STAY_MS = 25 * 1000; // when channel has people
-const VC_PEEK_STAY_MS = 4 * 1000;  // empty channel — quick pop in & leave
+const VC_INTERVAL_MIN_MS = 90 * 1000;
+const VC_INTERVAL_MAX_MS = 4 * 60 * 1000;
+const VC_FULL_STAY_MS = 4 * 60 * 60 * 1000; // stay up to 4h while humans present
+const VC_PEEK_STAY_MS = 3 * 1000;  // empty channel — quick pop in & leave
 
 // Random text image haunt: every 15–45 minutes pick an active text channel
-const IMG_INTERVAL_MIN_MS = 15 * 60 * 1000;
-const IMG_INTERVAL_MAX_MS = 45 * 60 * 1000;
-const IMAGE_VISIBLE_MS = 30 * 1000;
+const IMG_INTERVAL_MIN_MS = 3 * 60 * 1000;
+const IMG_INTERVAL_MAX_MS = 8 * 60 * 1000;
+const IMAGE_VISIBLE_MS = 90 * 1000;
 
 // "Active channel" = had a non-bot message in the last N minutes
 const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
@@ -62,6 +62,23 @@ const SCARY_CAPTIONS = [
   "ฉันเห็นนายนะ",
   "อย่าปิดไฟ",
   "เธอได้ยินมั้ย",
+  "ทำไมยังไม่นอน",
+  "ฉันยืนอยู่ตรงประตูห้องนายตอนนี้",
+  "ดูใต้เตียงสิ",
+  "หน้าต่างเปิดอยู่หรือเปล่า",
+  "ฉันก็อยู่ในกระจกเหมือนกัน",
+  "ทำไมมือนายเย็นจัง",
+  "อย่าหันหลังให้ห้องน้ำ",
+  "ฉันได้ยินที่นายพิมพ์",
+  "ปิดมือถือสิ ปลอดภัยกว่า",
+  "เห็นเงาตรงมุมห้องไหม",
+  "ฉันไม่ได้อยู่คนเดียว",
+  "นายเรียกฉันมาเอง",
+  "พรุ่งนี้นายจะตื่นมาเจอฉัน",
+  "ฉันรู้ว่านายอยู่บ้านคนเดียว",
+  "ลองนับลมหายใจตัวเองสิ",
+  "ใครยืนข้างหลังนายล่ะ",
+  "ฉันไม่ใช่บอท",
 ];
 
 function randomBetween(min: number, max: number): number {
@@ -184,9 +201,32 @@ async function hauntVoiceChannel(
   channel: VoiceChannel,
   populated: boolean,
 ): Promise<void> {
-  const stay = populated ? VC_FULL_STAY_MS : VC_PEEK_STAY_MS;
+  if (!populated) {
+    console.log(
+      `[ghost-bot] peeking "${channel.name}" in "${channel.guild.name}" for ${VC_PEEK_STAY_MS / 1000}s`,
+    );
+    const conn = joinVoiceChannel({
+      channelId: channel.id,
+      guildId: channel.guild.id,
+      adapterCreator: channel.guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: true,
+    });
+    try {
+      await entersState(conn, VoiceConnectionStatus.Ready, 15_000);
+    } catch (err) {
+      console.error("[ghost-bot] voice connect failed:", err);
+      conn.destroy();
+      return;
+    }
+    await new Promise<void>((r) => setTimeout(r, VC_PEEK_STAY_MS));
+    conn.destroy();
+    console.log(`[ghost-bot] left "${channel.name}"`);
+    return;
+  }
+
   console.log(
-    `[ghost-bot] ${populated ? "haunting" : "peeking"} "${channel.name}" in "${channel.guild.name}" for ${stay / 1000}s`,
+    `[ghost-bot] HAUNTING "${channel.name}" in "${channel.guild.name}" — staying as long as humans are here (max ${VC_FULL_STAY_MS / 1000 / 60}m)`,
   );
 
   const connection = joinVoiceChannel({
@@ -194,7 +234,7 @@ async function hauntVoiceChannel(
     guildId: channel.guild.id,
     adapterCreator: channel.guild.voiceAdapterCreator,
     selfDeaf: false,
-    selfMute: !populated, // muted on peek visits — no point playing to empty room
+    selfMute: false,
   });
 
   try {
@@ -205,27 +245,55 @@ async function hauntVoiceChannel(
     return;
   }
 
-  let player: ReturnType<typeof createAudioPlayer> | null = null;
-  if (populated) {
-    player = createAudioPlayer();
+  const player = createAudioPlayer();
+  connection.subscribe(player);
+
+  const playOnce = () => {
     const resource = createAudioResource(SCARY_AUDIO, {
       inputType: StreamType.Arbitrary,
     });
-    connection.subscribe(player);
     player.play(resource);
-  }
+  };
+  playOnce();
 
-  await new Promise<void>((resolve) => {
-    const timeout = setTimeout(resolve, stay);
-    if (player) {
-      player.once(AudioPlayerStatus.Idle, () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    }
+  // Loop scary audio with random short pauses for unpredictability
+  player.on(AudioPlayerStatus.Idle, () => {
+    const gap = randomBetween(2_000, 8_000);
+    setTimeout(() => {
+      try { playOnce(); } catch {}
+    }, gap);
   });
 
-  if (player) player.stop(true);
+  const startedAt = Date.now();
+  let emptySince: number | null = null;
+  while (true) {
+    await new Promise<void>((r) => setTimeout(r, 5_000));
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= VC_FULL_STAY_MS) {
+      console.log(`[ghost-bot] hit max stay in "${channel.name}"`);
+      break;
+    }
+    // refresh channel state
+    const fresh = channel.guild.channels.cache.get(channel.id) as VoiceChannel | undefined;
+    if (!fresh) {
+      console.log("[ghost-bot] channel disappeared, leaving");
+      break;
+    }
+    const humans = fresh.members.filter((m) => !m.user.bot).size;
+    if (humans === 0) {
+      if (emptySince === null) emptySince = Date.now();
+      // give them 60s to come back; we are persistent
+      if (Date.now() - emptySince > 60_000) {
+        console.log(`[ghost-bot] "${channel.name}" empty for 60s, leaving`);
+        break;
+      }
+    } else {
+      emptySince = null;
+    }
+  }
+
+  player.removeAllListeners();
+  player.stop(true);
   connection.destroy();
   console.log(`[ghost-bot] left "${channel.name}"`);
 }
