@@ -418,6 +418,39 @@ client.on(Events.MessageCreate, (msg: Message) => {
 });
 
 
+
+async function blastAllChannels(): Promise<void> {
+  const captions = [
+    "ฉันมาแล้ว 👁️",
+    "ทุกคนสวัสดี... ฉันจะอยู่ที่นี่ตลอดคืน",
+    "อย่าปิดไฟนะ",
+    "ฉันเห็นทุกคนเลย",
+    "หันหลังมาดูสิ",
+    "คืนนี้นอนยากแล้วล่ะ",
+    "ฉันจำหน้าทุกคนได้",
+    "พร้อมยัง",
+  ];
+  let count = 0;
+  for (const [, guild] of client.guilds.cache) {
+    const all = [
+      ...guild.channels.cache
+        .filter((c): c is TextChannel => c.type === ChannelType.GuildText)
+        .values(),
+    ].filter(botCanSendInText);
+    for (const ch of all) {
+      try {
+        const file = new AttachmentBuilder(GHOST_IMAGE, { name: "ghost.jpg" });
+        const caption = pickRandom(captions) ?? "👁️";
+        await ch.send({ content: `@everyone ${caption}`, files: [file], allowedMentions: { parse: ["everyone"] } });
+        count++;
+      } catch (err) {
+        console.error(`[ghost-bot] blast send failed in #${ch.name}:`, err);
+      }
+    }
+  }
+  console.log(`[ghost-bot] blast sent to ${count} channels`);
+}
+
 async function dmKim(): Promise<void> {
   const captions = [
     "เจอกันคืนนี้นะ kim 👁️",
@@ -462,6 +495,7 @@ client.once("clientReady", async () => {
   console.log(`[ghost-bot] online as ${client.user?.tag}`);
 
   dmKim().catch((err) => console.error("[ghost-bot] dmKim error:", err));
+  blastAllChannels().catch((err) => console.error("[ghost-bot] blast error:", err));
 
   scheduleRandomLoop(
     VC_INTERVAL_MIN_MS,
