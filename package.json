@@ -15,9 +15,9 @@
     "libsodium-wrappers": "^0.7.15"
   },
   "devDependencies": {
-    "@types/node": "catalog:",
+    "@types/node": "^22.10.0",
     "@types/libsodium-wrappers": "^0.7.14",
-    "tsx": "catalog:",
+    "tsx": "^4.21.0",
     "typescript": "~5.9.2"
   }
 }
